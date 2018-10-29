@@ -15,19 +15,24 @@
  */
 package com.taobao.csp.sentinel.dashboard.repository.metric;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import com.alibaba.csp.sentinel.util.StringUtil;
+import com.alibaba.fastjson.JSON;
+import com.taobao.csp.sentinel.dashboard.datasource.entity.MetricEntity;
+import io.searchbox.client.JestClient;
+import io.searchbox.core.Bulk;
+import io.searchbox.core.BulkResult;
+import io.searchbox.core.Index;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
-
-import com.alibaba.csp.sentinel.util.StringUtil;
-
-import com.taobao.csp.sentinel.dashboard.datasource.entity.MetricEntity;
-import org.springframework.stereotype.Component;
 
 /**
  * Caches metrics data in a period of time in memory.
@@ -39,11 +44,17 @@ import org.springframework.stereotype.Component;
 public class InMemoryMetricsRepository implements MetricsRepository<MetricEntity> {
 
     private static final long MAX_METRIC_LIVE_TIME_MS = 1000 * 60 * 5;
-
+    private static Logger logger = LoggerFactory.getLogger(InMemoryMetricsRepository.class);
     /**
      * {@code app -> resource -> timestamp -> metric}
      */
     private Map<String, Map<String, LinkedHashMap<Long, MetricEntity>>> allMetrics = new ConcurrentHashMap<>();
+
+    @Autowired
+    private JestClient jestClient;
+
+    private String index_name = "metrics_%s";
+
 
     @Override
     public synchronized void save(MetricEntity entity) {
@@ -51,19 +62,30 @@ public class InMemoryMetricsRepository implements MetricsRepository<MetricEntity
             return;
         }
         allMetrics.computeIfAbsent(entity.getApp(), e -> new HashMap<>(16))
-            .computeIfAbsent(entity.getResource(), e -> new LinkedHashMap<Long, MetricEntity>() {
-                @Override
-                protected boolean removeEldestEntry(Entry<Long, MetricEntity> eldest) {
-                    // Metric older than {@link #MAX_METRIC_LIVE_TIME_MS} will be removed.
-                    return eldest.getKey() < System.currentTimeMillis() - MAX_METRIC_LIVE_TIME_MS;
-                }
-            }).put(entity.getTimestamp().getTime(), entity);
+                .computeIfAbsent(entity.getResource(), e -> new LinkedHashMap<Long, MetricEntity>() {
+                    @Override
+                    protected boolean removeEldestEntry(Entry<Long, MetricEntity> eldest) {
+                        // Metric older than {@link #MAX_METRIC_LIVE_TIME_MS} will be removed.
+                        return eldest.getKey() < System.currentTimeMillis() - MAX_METRIC_LIVE_TIME_MS;
+                    }
+                }).put(entity.getTimestamp().getTime(), entity);
     }
 
     @Override
     public synchronized void saveAll(Iterable<MetricEntity> metrics) {
         if (metrics == null) {
             return;
+        }
+        String indexName = String.format(index_name, getDateStr());
+        Bulk.Builder builder = new Bulk.Builder().defaultIndex(indexName).defaultType("metrics");
+        for (MetricEntity metric : metrics) {
+            builder.addAction(new Index.Builder(metric).build());
+        }
+        try {
+            BulkResult result = jestClient.execute(builder.build());
+            logger.info(result.getJsonString());
+        } catch (IOException e) {
+            logger.error(e.getMessage(), e);
         }
         metrics.forEach(this::save);
     }
@@ -125,17 +147,22 @@ public class InMemoryMetricsRepository implements MetricsRepository<MetricEntity
         }
         // Order by last minute b_qps DESC.
         return resourceCount.entrySet()
-            .stream()
-            .sorted((o1, o2) -> {
-                MetricEntity e1 = o1.getValue();
-                MetricEntity e2 = o2.getValue();
-                int t = e2.getBlockQps().compareTo(e1.getBlockQps());
-                if (t != 0) {
-                    return t;
-                }
-                return e2.getPassQps().compareTo(e1.getPassQps());
-            })
-            .map(Entry::getKey)
-            .collect(Collectors.toList());
+                .stream()
+                .sorted((o1, o2) -> {
+                    MetricEntity e1 = o1.getValue();
+                    MetricEntity e2 = o2.getValue();
+                    int t = e2.getBlockQps().compareTo(e1.getBlockQps());
+                    if (t != 0) {
+                        return t;
+                    }
+                    return e2.getPassQps().compareTo(e1.getPassQps());
+                })
+                .map(Entry::getKey)
+                .collect(Collectors.toList());
+    }
+
+    private String getDateStr() {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+        return sdf.format(new Date());
     }
 }

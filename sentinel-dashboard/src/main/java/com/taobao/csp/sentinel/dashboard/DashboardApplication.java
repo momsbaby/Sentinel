@@ -15,13 +15,22 @@
  */
 package com.taobao.csp.sentinel.dashboard;
 
+import com.taobao.csp.sentinel.dashboard.config.CustomGsonBuilderCustomizer;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.gson.GsonBuilderCustomizer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.data.elasticsearch.repository.config.EnableElasticsearchRepositories;
 
 @SpringBootApplication
 public class DashboardApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(DashboardApplication.class, args);
+    }
+
+    @Bean
+    public GsonBuilderCustomizer gsonBuilderCustomizer() {
+        return new CustomGsonBuilderCustomizer();
     }
 }
